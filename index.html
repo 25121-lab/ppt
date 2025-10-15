@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 식단 플래너</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide icons for aesthetics -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Custom font for better Korean display */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Noto+Sans+KR:wght@100..900&display=swap');
+        
+        :root {
+            font-family: 'Noto Sans KR', 'Inter', sans-serif;
+        }
+        
+        /* Loading spinner animation */
+        .spinner {
+            border-top-color: #3498db;
+            -webkit-animation: spin 1s linear infinite;
+            animation: spin 1s linear infinite;
+        }
+        @-webkit-keyframes spin {
+            0% { -webkit-transform: rotate(0deg); }
+            100% { -webkit-transform: rotate(360deg); }
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-4 md:p-8">
+
+    <div id="app" class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-indigo-700 tracking-tight mb-2">
+                <i data-lucide="utensils" class="inline-block mr-2 w-8 h-8 align-text-bottom"></i>
+                AI 식단 플래너
+            </h1>
+            <p class="text-lg text-gray-500">당신의 요청에 맞는 하루 세끼 맞춤 식단을 생성하세요.</p>
+        </header>
+
+        <!-- Input Section Card -->
+        <div class="bg-white p-6 md:p-8 rounded-xl shadow-lg border border-indigo-100 mb-8">
+            <h2 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center">
+                <i data-lucide="chef-hat" class="w-6 h-6 mr-2 text-indigo-500"></i>
+                식단 요청하기
+            </h2>
+            
+            <textarea id="promptInput" rows="4" 
+                class="w-full p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-base resize-none"
+                placeholder="예: 70kg 남성, 근력 운동을 위한 고단백 식단, 매운 음식 제외. 또는 다이어트를 위한 간단한 샐러드 위주 식단."></textarea>
+            
+            <button id="generateButton" 
+                class="mt-4 w-full md:w-auto px-6 py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-md hover:bg-indigo-700 transition duration-300 transform hover:scale-[1.01] focus:outline-none focus:ring-4 focus:ring-indigo-500/50 flex items-center justify-center disabled:opacity-50"
+                disabled>
+                <i data-lucide="wand-sparkles" class="w-5 h-5 mr-2"></i>
+                식단 생성 시작
+            </button>
+            
+            <div id="loadingIndicator" class="hidden mt-4 text-center">
+                <div class="spinner inline-block w-8 h-8 border-4 border-gray-200 border-t-indigo-600 rounded-full"></div>
+                <p class="mt-2 text-indigo-600 font-medium">식단을 생성하는 중입니다...</p>
+            </div>
+
+            <div id="statusMessage" class="mt-4 text-sm text-red-600 font-medium hidden"></div>
+        </div>
+
+        <!-- Result Section -->
+        <div id="resultsContainer" class="hidden">
+            <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-2 border-indigo-200 flex items-center">
+                <i data-lucide="clipboard-list" class="w-7 h-7 mr-2 text-indigo-500"></i>
+                오늘의 맞춤 식단
+            </h2>
+            
+            <div id="mealPlanCards" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Meal Cards will be injected here -->
+            </div>
+            
+            <div id="citationSource" class="mt-6 p-4 bg-gray-100 rounded-lg text-sm text-gray-600 hidden">
+                <p class="font-semibold mb-1">참고 정보:</p>
+                <div id="sourcesList"></div>
+            </div>
+        </div>
+
+        <!-- Error/Initial State -->
+        <div id="initialState" class="text-center p-12 bg-white rounded-xl shadow-lg border border-gray-200">
+            <i data-lucide="smile" class="w-12 h-12 text-gray-400 mx-auto mb-4"></i>
+            <p class="text-gray-500 text-lg">상단의 입력창에 원하는 식단 조건을 입력하고 '식단 생성 시작' 버튼을 눌러주세요.</p>
+        </div>
+    </div>
+
+    <!-- Firebase and Logic Script -->
+    <script type="module">
+        // --- Mandatory Firebase Imports and Setup (Required by execution environment) ---
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth;
+        let isAuthReady = false;
+
+        if (firebaseConfig) {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('Debug'); // Enable Firebase logging
+                
+                // Authentication listener
+                onAuthStateChanged(auth, async (user) => {
+                    if (!user) {
+                        // Attempt sign-in if not authenticated
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                    isAuthReady = true;
+                    console.log("Firebase Auth Ready. User:", auth.currentUser ? auth.currentUser.uid : 'Anonymous');
+                    document.getElementById('generateButton').disabled = false; // Enable button once ready
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                document.getElementById('statusMessage').textContent = "Firebase 초기화 오류. 콘솔을 확인해주세요.";
+                document.getElementById('statusMessage').classList.remove('hidden');
+            }
+        } else {
+             // If firebase config is missing, still allow core functionality to proceed
+             isAuthReady = true;
+             document.getElementById('generateButton').disabled = false;
+        }
+
+        // Initialize Lucide Icons
+        lucide.createIcons();
+
+        // --- Core Gemini API Logic ---
+        
+        const MODEL_NAME = "gemini-2.5-flash-preview-05-20";
+        const API_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent`;
+        const apiKey = ""; // API key is handled by the Canvas environment
+
+        // System Instruction: Act as a helpful nutritionist
+        const systemPrompt = "당신은 사용자 요청에 맞는 하루 세끼(아침, 점심, 저녁) 식단을 전문적으로 짜주는 영양사입니다. 식단은 한국어로 작성하며, 각 식사별 메뉴와 간단한 설명을 제공해야 합니다.";
+
+        // JSON Schema for structured output
+        const responseSchema = {
+            type: "OBJECT",
+            properties: {
+                "breakfast": { 
+                    type: "STRING", 
+                    description: "아침 식사 메뉴 및 간단한 설명 (예: 오트밀, 베리, 견과류를 넣은 통곡물 오트밀)" 
+                },
+                "lunch": { 
+                    type: "STRING", 
+                    description: "점심 식사 메뉴 및 간단한 설명 (예: 닭가슴살 샐러드와 통밀빵 한 조각)" 
+                },
+                "dinner": { 
+                    type: "STRING", 
+                    description: "저녁 식사 메뉴 및 간단한 설명 (예: 두부 버섯 볶음과 현미밥 1/3공기)" 
+                }
+            },
+            required: ["breakfast", "lunch", "dinner"]
+        };
+
+        const promptInput = document.getElementById('promptInput');
+        const generateButton = document.getElementById('generateButton');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const initialState = document.getElementById('initialState');
+        const mealPlanCards = document.getElementById('mealPlanCards');
+        const statusMessage = document.getElementById('statusMessage');
+        const citationSource = document.getElementById('citationSource');
+        const sourcesList = document.getElementById('sourcesList');
+
+        generateButton.addEventListener('click', () => {
+            const userQuery = promptInput.value.trim();
+            if (userQuery) {
+                generateMealPlan(userQuery);
+            } else {
+                statusMessage.textContent = "식단 조건을 입력해 주세요.";
+                statusMessage.classList.remove('hidden');
+                setTimeout(() => statusMessage.classList.add('hidden'), 3000);
+            }
+        });
+
+        // Helper function to create a meal card element
+        function createMealCard(title, iconName, content) {
+            return `
+                <div class="bg-white p-6 rounded-xl shadow-md border-t-4 border-indigo-500 transform hover:shadow-xl transition duration-300">
+                    <div class="flex items-center mb-3">
+                        <i data-lucide="${iconName}" class="w-6 h-6 mr-3 text-indigo-600"></i>
+                        <h3 class="text-xl font-bold text-gray-900">${title}</h3>
+                    </div>
+                    <p class="text-gray-700 whitespace-pre-wrap">${content}</p>
+                </div>
+            `;
+        }
+
+        // Helper function to handle exponential backoff for API calls
+        async function fetchWithRetry(url, options, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(url, options);
+                    if (response.status === 429 && i < maxRetries - 1) {
+                        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                    return response;
+                } catch (error) {
+                    if (i < maxRetries - 1) {
+                        const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error("Failed to fetch after multiple retries.");
+        }
+
+        async function generateMealPlan(userQuery) {
+            // UI state: Loading
+            generateButton.disabled = true;
+            loadingIndicator.classList.remove('hidden');
+            statusMessage.classList.add('hidden');
+            initialState.classList.add('hidden');
+            resultsContainer.classList.add('hidden');
+            
+            // Log the full API URL for debugging (key itself is handled by environment)
+            const fullApiUrl = `${API_BASE_URL}?key=${apiKey}`;
+            console.log("Constructed API URL:", fullApiUrl); 
+
+            const payload = {
+                contents: [{ parts: [{ text: userQuery }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                // Use Google Search for grounding and up-to-date dietary information
+                tools: [{ "google_search": {} }], 
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: responseSchema
+                }
+            };
+
+            try {
+                const response = await fetchWithRetry(fullApiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    // Specific error handling for 401/403 (Authentication/Permission)
+                    if (response.status === 401 || response.status === 403) {
+                         throw new Error("API 인증 오류 (401/403). Canvas 환경에서 API 키가 자동으로 제공되지 않았거나 권한 문제가 발생했습니다. 브라우저 콘솔을 확인해 주세요.");
+                    }
+                    throw new Error(`API call failed with status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const candidate = result.candidates?.[0];
+
+                if (!candidate || !candidate.content?.parts?.[0]?.text) {
+                    throw new Error("API 응답에서 유효한 식단 정보를 찾을 수 없습니다.");
+                }
+
+                const jsonText = candidate.content.parts[0].text;
+                const mealPlan = JSON.parse(jsonText);
+                
+                // 1. Display Meal Plan
+                mealPlanCards.innerHTML = ''; // Clear previous results
+                
+                const mealData = [
+                    { title: "아침 식사", icon: "sunrise", key: "breakfast" },
+                    { title: "점심 식사", icon: "sun", key: "lunch" },
+                    { title: "저녁 식사", icon: "moon", key: "dinner" }
+                ];
+                
+                mealData.forEach(data => {
+                    if (mealPlan[data.key]) {
+                        mealPlanCards.insertAdjacentHTML('beforeend', 
+                            createMealCard(data.title, data.icon, mealPlan[data.key])
+                        );
+                    }
+                });
+
+                // Update icons in the newly added cards
+                lucide.createIcons(); 
+                
+                // 2. Handle Grounding Sources (Citations)
+                let sources = [];
+                const groundingMetadata = candidate.groundingMetadata;
+                if (groundingMetadata && groundingMetadata.groundingAttributions) {
+                    sources = groundingMetadata.groundingAttributions
+                        .map(attribution => ({
+                            uri: attribution.web?.uri,
+                            title: attribution.web?.title,
+                        }))
+                        .filter(source => source.uri && source.title)
+                        // Deduplicate sources by URI
+                        .filter((source, index, self) => 
+                            index === self.findIndex((t) => (
+                                t.uri === source.uri
+                            ))
+                        );
+                }
+
+                sourcesList.innerHTML = '';
+                if (sources.length > 0) {
+                    sources.forEach((source, index) => {
+                        const listItem = document.createElement('a');
+                        listItem.href = source.uri;
+                        listItem.target = "_blank";
+                        listItem.className = "block hover:text-indigo-600 transition duration-150 truncate";
+                        listItem.textContent = `${index + 1}. ${source.title}`;
+                        sourcesList.appendChild(listItem);
+                    });
+                    citationSource.classList.remove('hidden');
+                } else {
+                    citationSource.classList.add('hidden');
+                }
+
+                // UI state: Success
+                resultsContainer.classList.remove('hidden');
+
+            } catch (error) {
+                console.error("Error generating meal plan:", error);
+                statusMessage.textContent = `식단 생성 중 오류가 발생했습니다: ${error.message}`;
+                statusMessage.classList.remove('hidden');
+                resultsContainer.classList.add('hidden');
+                initialState.classList.remove('hidden');
+
+            } finally {
+                // UI state: Finished
+                generateButton.disabled = false;
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html>
